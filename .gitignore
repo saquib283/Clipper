@@ -9,4 +9,5 @@ outputs/
 *.webm
 *.m4a
 *.wav
+*.mp3
 skills/youtube-clipper/scripts/.venv_python
