@@ -10,4 +10,6 @@ outputs/
 *.m4a
 *.wav
 *.mp3
+!custom_sfx/*.mp3
+!skills/youtube-clipper/assets/sfx/*.wav
 skills/youtube-clipper/scripts/.venv_python

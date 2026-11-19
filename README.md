@@ -38,7 +38,8 @@ Run tests:
 ## Repository Structure
 - `skills/youtube-clipper/` — Antigravity skill (`SKILL.md`, `references/clip-rubric.md`, `scripts/`)
 - `scripts/install_skill.py` — Venv bootstrapper & global skill sync script
-- `custom_sfx/` — Drop-in folder for custom `.mp3`/`.wav` meme SFX (binaries gitignored; see `custom_sfx/README.txt`)
+- `custom_sfx/` — Drop-in folder for custom `.mp3`/`.wav` meme SFX (23 viral MP3s included; see `custom_sfx/README.txt`)
 - `brand/TeeniTinyClips/` — Complete YouTube, Instagram, and Facebook brand kit
 - `tests/` — 67 unit & real-FFmpeg offline integration tests
 - `docs/superpowers/` — Design spec and implementation plan
+
