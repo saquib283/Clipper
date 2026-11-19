@@ -5,7 +5,7 @@ import subprocess
 from functools import lru_cache
 from pathlib import Path
 
-from lib.models import CaptionSegment, HeatmapPeak, WordTiming
+from lib.models import CaptionSegment, ClipError, HeatmapPeak, WordTiming
 
 PTS_RE = re.compile(r"pts_time:(\d+(?:\.\d+)?)")
 RMS_RE = re.compile(r"lavfi\.astats\.Overall\.RMS_level=(-?\d+(?:\.\d+)?|-inf)")
@@ -95,8 +95,10 @@ def detect_audio_peaks(
         "null",
         "-",
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    levels = parse_ffmpeg_rms_levels(proc.stderr, window_sec=window_sec)
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if proc.returncode != 0:
+        raise ClipError("FFMPEG_FAILED", f"Audio peak scan failed: {(proc.stderr or '').strip()[:400]}")
+    levels = parse_ffmpeg_rms_levels(proc.stderr or "", window_sec=window_sec)
     return peaks_from_rms_windows(levels, duration_sec=duration_sec, window_sec=window_sec, max_peaks=max_peaks)
 
 
@@ -145,5 +147,5 @@ def transcribe_audio(
                         end=round(float(w.end) + clip_offset, 3),
                     )
                 )
-    detected_lang = str(getattr(info, "language", language or "en"))
+    detected_lang = str(getattr(info, "language", None) or language or "en")
     return segments, words, detected_lang

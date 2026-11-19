@@ -16,9 +16,11 @@ SUBCOMMANDS = {
 def resolve_venv_python() -> Path | None:
     marker = SCRIPTS_DIR / ".venv_python"
     if marker.exists():
-        candidate = Path(marker.read_text(encoding="utf-8").strip())
-        if candidate.exists():
-            return candidate
+        raw = marker.read_text(encoding="utf-8").strip()
+        if raw:
+            candidate = Path(raw)
+            if candidate.is_file():
+                return candidate
     return None
 
 

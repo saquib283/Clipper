@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import cv2
 import pytest
 
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "skills" / "youtube-clipper" / "scripts"
@@ -332,4 +333,67 @@ def test_render_whisper_caption_source_and_keep_temp(monkeypatch: pytest.MonkeyP
     assert (seen_temp_dirs[0] / "captions.ass").exists()
     import shutil
     shutil.rmtree(seen_temp_dirs[0], ignore_errors=True)
+
+
+def test_render_isolates_per_clip_tracking_failures(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "video_url": "https://www.youtube.com/watch?v=trk01",
+                "video_id": "trk01",
+                "video_title": "Tracking Failure Isolation",
+                "clips": [
+                    {"id": "c1", "slug": "bad-media", "start": 0.0, "end": 2.0, "layout": "face-track", "captions": False, "title": "Bad Media"},
+                    {"id": "c2", "slug": "bad-cv2", "start": 2.0, "end": 4.0, "layout": "auto", "captions": False, "title": "Bad CV2"},
+                    {"id": "c3", "slug": "good-clip", "start": 4.0, "end": 6.0, "layout": "landscape", "captions": False, "title": "Good Clip"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    local_src = tmp_path / "src.mp4"
+    local_src.write_bytes(b"video")
+
+    def fake_trim(src_path: Path, out_path: Path, start_offset: float, duration: float) -> Path:
+        out_path.write_bytes(f"trimmed-{start_offset}".encode("utf-8"))
+        return out_path
+
+    track_calls = {"n": 0}
+
+    def fake_track(video_path: Path, sample_fps: float = 5.0) -> TrackingPlan:
+        track_calls["n"] += 1
+        if track_calls["n"] == 1:
+            raise ClipError("MEDIA_ERROR", "Could not open video for tracking")
+        raise cv2.error("simulated OpenCV failure")
+
+    monkeypatch.setattr(render_mod, "trim_exact", fake_trim)
+    monkeypatch.setattr(render_mod, "analyze_video_tracking", fake_track)
+    monkeypatch.setattr(render_mod, "probe_media", lambda p: MediaInfo(1280, 720, 24.0, 2.0, True))
+    monkeypatch.setattr(
+        render_mod,
+        "render_static_layout_clip",
+        lambda trimmed, out_mp4, layout, media, ass, work_dir, split_cam_corner="br": out_mp4.write_bytes(b"mp4")
+        or out_mp4,
+    )
+
+    out_dir = tmp_path / "out_trk"
+    report = run_render(plan_path, out_dir=out_dir, local_source=local_src)
+    assert report["ok"] is False
+    assert len(report["clips"]) == 3
+    assert report["clips"][0]["ok"] is False
+    assert report["clips"][0]["error_code"] == "MEDIA_ERROR"
+    assert report["clips"][1]["ok"] is False
+    assert report["clips"][1]["error_code"] == "MEDIA_ERROR"
+    assert report["clips"][2]["ok"] is True
+    assert Path(report["clips"][2]["output_path"]).exists()
+
+    post_kit = out_dir / "post_kit.md"
+    report_json = out_dir / "render_report.json"
+    assert post_kit.exists()
+    assert report_json.exists()
+    kit_text = post_kit.read_text(encoding="utf-8")
+    assert "Clips Generated:** 1/3" in kit_text
+    assert "Failed (`MEDIA_ERROR`" in kit_text
+    assert "Good Clip" in kit_text
 

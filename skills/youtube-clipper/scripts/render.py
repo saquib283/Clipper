@@ -8,6 +8,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import cv2
+
 from lib.audio_peaks import transcribe_audio
 from lib.captions import generate_ass
 from lib.ffmpeg_ops import (
@@ -141,7 +143,10 @@ def run_render(
             layout_used = clip.layout
             tracking = None
             if clip.layout in ("face-track", "auto"):
-                tracking = analyze_video_tracking(trimmed, sample_fps=5.0)
+                try:
+                    tracking = analyze_video_tracking(trimmed, sample_fps=5.0)
+                except cv2.error as exc:
+                    raise ClipError("MEDIA_ERROR", f"Video tracking failed for {clip.id}: {exc}") from exc
                 if clip.layout == "auto" and tracking.face_ratio < 0.30:
                     layout_used = "blurred-fit"
                     warnings.append(f"Auto layout switched to blurred-fit (face presence {tracking.face_ratio:.0%}).")

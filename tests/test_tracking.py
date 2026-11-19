@@ -10,7 +10,7 @@ import pytest
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "skills" / "youtube-clipper" / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from lib.models import TrackingPlan  # noqa: E402
+from lib.models import ClipError, TrackingPlan  # noqa: E402
 from lib.tracking import (  # noqa: E402
     analyze_video_tracking,
     compute_vertical_crop_width,
@@ -69,8 +69,9 @@ def test_smooth_and_interpolate_edge_cases() -> None:
 
 def test_analyze_video_tracking_reads_video_and_handles_missing(tmp_path: Path) -> None:
     missing = tmp_path / "does_not_exist.mp4"
-    with pytest.raises(RuntimeError, match="Could not open video"):
+    with pytest.raises(ClipError, match="Could not open video") as exc:
         analyze_video_tracking(missing)
+    assert exc.value.code == "MEDIA_ERROR"
 
     video_path = tmp_path / "synthetic.avi"
     writer = cv2.VideoWriter(
@@ -146,3 +147,36 @@ def test_analyze_video_tracking_scales_detected_faces_and_falls_back_to_profile(
     assert plan.face_ratio == 1.0
     # center=1000, half crop=202 -> x0 = 798
     assert plan.x0_per_frame == [798, 798, 798, 798]
+
+
+def test_analyze_video_tracking_raises_when_cascade_empty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import lib.tracking as tr
+
+    video_path = tmp_path / "empty_cascade.avi"
+    writer = cv2.VideoWriter(
+        str(video_path),
+        cv2.VideoWriter_fourcc(*"MJPG"),
+        10.0,
+        (320, 180),
+    )
+    assert writer.isOpened()
+    try:
+        frame = np.full((180, 320, 3), 50, dtype=np.uint8)
+        writer.write(frame)
+    finally:
+        writer.release()
+
+    class EmptyCascade:
+        def __init__(self, path: str) -> None:
+            self.path = path
+
+        def empty(self) -> bool:
+            return True
+
+    monkeypatch.setattr(tr.cv2, "CascadeClassifier", EmptyCascade)
+    with pytest.raises(ClipError) as exc:
+        analyze_video_tracking(video_path)
+    assert exc.value.code == "MEDIA_ERROR"
+    assert "cascade" in exc.value.message.lower()

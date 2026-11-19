@@ -5,7 +5,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from lib.models import TrackingPlan
+from lib.models import ClipError, TrackingPlan
 
 
 def compute_vertical_crop_width(src_w: int, src_h: int) -> int:
@@ -88,7 +88,7 @@ def analyze_video_tracking(video_path: Path, sample_fps: float = 5.0) -> Trackin
     """Analyze a video at sampled frames to produce a scene-aware face-tracking crop plan."""
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
-        raise RuntimeError(f"Could not open video for tracking: {video_path}")
+        raise ClipError("MEDIA_ERROR", f"Could not open video for tracking: {video_path}")
 
     try:
         src_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -100,6 +100,8 @@ def analyze_video_tracking(video_path: Path, sample_fps: float = 5.0) -> Trackin
         cascades_dir = Path(cv2.data.haarcascades)
         frontal = cv2.CascadeClassifier(str(cascades_dir / "haarcascade_frontalface_default.xml"))
         profile = cv2.CascadeClassifier(str(cascades_dir / "haarcascade_profileface.xml"))
+        if getattr(frontal, "empty", lambda: False)() or getattr(profile, "empty", lambda: False)():
+            raise ClipError("MEDIA_ERROR", "Failed to load OpenCV Haar face cascade XML.")
 
         step = max(1, int(round(fps / max(0.5, sample_fps))))
         sample_indices: list[int] = []
@@ -136,6 +138,8 @@ def analyze_video_tracking(video_path: Path, sample_fps: float = 5.0) -> Trackin
                     face_centers.append(None)
                 sample_indices.append(frame_idx)
             frame_idx += 1
+    except cv2.error as exc:
+        raise ClipError("MEDIA_ERROR", f"Video tracking failed for {video_path}: {exc}") from exc
     finally:
         cap.release()
 

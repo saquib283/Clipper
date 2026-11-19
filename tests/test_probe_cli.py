@@ -221,3 +221,25 @@ def test_youtube_download_subtitles_audio_and_section(monkeypatch, tmp_path: Pat
 
     clip_path = yt_mod.download_video_section("https://youtu.be/x", 10.0, 25.0, tmp_path / "clip.mp4")
     assert clip_path.exists()
+
+
+def test_classify_ytdlp_error_avoids_bot_substring_false_positives() -> None:
+    for msg in (
+        "ERROR: Video unavailable. More information about this video",
+        "ERROR: Video about robotics is unavailable",
+        "ERROR: Both formats failed at the bottom of the page",
+    ):
+        err = yt_mod._classify_ytdlp_error(msg, "https://youtu.be/x")
+        assert err.code == "UNAVAILABLE"
+
+    bot_err = yt_mod._classify_ytdlp_error(
+        "ERROR: [youtube] x: Sign in to confirm you're not a bot",
+        "https://youtu.be/x",
+    )
+    assert bot_err.code == "BOT_CHECK"
+
+    word_bot_err = yt_mod._classify_ytdlp_error(
+        "ERROR: Blocked by bot detection",
+        "https://youtu.be/x",
+    )
+    assert word_bot_err.code == "BOT_CHECK"

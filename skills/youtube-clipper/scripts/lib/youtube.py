@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -20,7 +21,7 @@ def _ytdlp_base_cmd(cookies_from_browser: str | None = None) -> list[str]:
 def _classify_ytdlp_error(stderr: str, url: str) -> ClipError:
     """Map yt-dlp stderr messages to structured ClipError codes."""
     low = stderr.lower()
-    if "sign in to confirm you" in low or "bot" in low:
+    if "sign in to confirm you" in low or re.search(r"\bnot a bot\b|\bbot\b", low):
         return ClipError(
             "BOT_CHECK",
             f"YouTube requested bot verification for {url}.",

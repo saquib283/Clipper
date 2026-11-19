@@ -137,26 +137,42 @@ class ClipsPlan:
         except Exception as exc:
             raise ClipError("INVALID_PLAN", f"Failed to parse plan JSON at {path}: {exc}") from exc
 
+        if not isinstance(raw, dict):
+            raise ClipError("INVALID_PLAN", "Plan JSON root must be an object.")
+
         raw_clips = raw.get("clips")
         if not isinstance(raw_clips, list) or not raw_clips:
             raise ClipError("INVALID_PLAN", "Plan must contain a non-empty 'clips' list.")
 
         clips: list[ClipSpec] = []
         for idx, item in enumerate(raw_clips, start=1):
-            spec = ClipSpec(
-                id=str(item.get("id") or f"clip_{idx:02d}"),
-                slug=str(item.get("slug") or f"clip-{idx:02d}"),
-                start=float(item["start"]),
-                end=float(item["end"]),
-                layout=str(item.get("layout", "face-track")),
-                split_cam_corner=str(item.get("split_cam_corner", "br")),
-                captions=bool(item.get("captions", True)),
-                caption_style=str(item.get("caption_style", "bold-highlight")),
-                title=str(item.get("title", "")),
-                caption_text=str(item.get("caption_text", "")),
-                hashtags=[str(h) for h in item.get("hashtags", [])],
-                why_selected=str(item.get("why_selected", "")),
-            )
+            if not isinstance(item, dict):
+                raise ClipError("INVALID_PLAN", f"Invalid clip entry #{idx}: expected an object.")
+            raw_hashtags = item.get("hashtags")
+            if raw_hashtags is None:
+                hashtags_list: list[Any] = []
+            elif isinstance(raw_hashtags, list):
+                hashtags_list = raw_hashtags
+            else:
+                raise ClipError("INVALID_PLAN", f"Invalid clip entry #{idx}: 'hashtags' must be a list.")
+
+            try:
+                spec = ClipSpec(
+                    id=str(item.get("id") or f"clip_{idx:02d}"),
+                    slug=str(item.get("slug") or f"clip-{idx:02d}"),
+                    start=float(item["start"]),
+                    end=float(item["end"]),
+                    layout=str(item.get("layout", "face-track")),
+                    split_cam_corner=str(item.get("split_cam_corner", "br")),
+                    captions=bool(item.get("captions", True)),
+                    caption_style=str(item.get("caption_style", "bold-highlight")),
+                    title=str(item.get("title", "")),
+                    caption_text=str(item.get("caption_text", "")),
+                    hashtags=[str(h) for h in hashtags_list],
+                    why_selected=str(item.get("why_selected", "")),
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ClipError("INVALID_PLAN", f"Invalid clip entry #{idx}: {exc}") from exc
             spec.validate()
             clips.append(spec)
 

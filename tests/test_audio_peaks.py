@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
+import pytest
+
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "skills" / "youtube-clipper" / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
@@ -14,6 +16,7 @@ from lib.audio_peaks import (  # noqa: E402
     peaks_from_rms_windows,
     transcribe_audio,
 )
+from lib.models import ClipError  # noqa: E402
 
 
 def test_parse_ffmpeg_rms_levels_and_pick_top_peaks() -> None:
@@ -66,11 +69,13 @@ def test_detect_audio_peaks_invokes_ffmpeg(monkeypatch, tmp_path: Path) -> None:
 
     captured: dict[str, object] = {}
 
-    def fake_run(cmd, capture_output: bool, text: bool):
+    def fake_run(cmd, capture_output: bool, text: bool, **kwargs):
         captured["cmd"] = cmd
         captured["capture_output"] = capture_output
         captured["text"] = text
+        captured["kwargs"] = kwargs
         return SimpleNamespace(
+            returncode=0,
             stderr="\n".join(
                 [
                     "pts_time:0.0",
@@ -78,7 +83,7 @@ def test_detect_audio_peaks_invokes_ffmpeg(monkeypatch, tmp_path: Path) -> None:
                     "pts_time:30.0",
                     "lavfi.astats.Overall.RMS_level=-10.0",
                 ]
-            )
+            ),
         )
 
     monkeypatch.setattr(ap.subprocess, "run", fake_run)
@@ -86,9 +91,24 @@ def test_detect_audio_peaks_invokes_ffmpeg(monkeypatch, tmp_path: Path) -> None:
     peaks = detect_audio_peaks(audio, duration_sec=60.0, window_sec=5.0, max_peaks=3)
     assert captured["capture_output"] is True
     assert captured["text"] is True
+    assert captured["kwargs"]["encoding"] == "utf-8"
+    assert captured["kwargs"]["errors"] == "replace"
     assert str(audio) in captured["cmd"]
     assert len(peaks) == 1
     assert peaks[0].peak_time == 32.5
+
+
+def test_detect_audio_peaks_raises_on_ffmpeg_failure(monkeypatch, tmp_path: Path) -> None:
+    import lib.audio_peaks as ap
+
+    def fake_run(cmd, **kwargs):
+        return SimpleNamespace(returncode=1, stderr="Invalid data found when processing input\n")
+
+    monkeypatch.setattr(ap.subprocess, "run", fake_run)
+    with pytest.raises(ClipError) as exc:
+        detect_audio_peaks(tmp_path / "bad.wav", duration_sec=60.0)
+    assert exc.value.code == "FFMPEG_FAILED"
+    assert "Invalid data found" in exc.value.message
 
 
 def test_transcribe_audio_uses_faster_whisper_and_offsets_times(monkeypatch, tmp_path: Path) -> None:
@@ -115,6 +135,27 @@ def test_transcribe_audio_uses_faster_whisper_and_offsets_times(monkeypatch, tmp
     assert segments[0].start == 10.2
     assert words[0].word == "hello"
     assert words[0].end == 10.7
+
+
+def test_transcribe_audio_falls_back_when_info_language_is_none(monkeypatch, tmp_path: Path) -> None:
+    fake_seg = SimpleNamespace(start=0.1, end=0.5, text="hola", words=[])
+    fake_info = SimpleNamespace(language=None)
+
+    class FakeModel:
+        def transcribe(self, path: str, language=None, word_timestamps: bool = True, vad_filter: bool = True):
+            return [fake_seg], fake_info
+
+    import lib.audio_peaks as ap
+
+    monkeypatch.setattr(ap, "_load_whisper_model", lambda size: FakeModel())
+    audio = tmp_path / "clip.wav"
+    audio.write_bytes(b"RIFF")
+
+    _, _, default_lang = transcribe_audio(audio, model_size="base")
+    assert default_lang == "en"
+
+    _, _, explicit_lang = transcribe_audio(audio, model_size="base", language="es")
+    assert explicit_lang == "es"
 
 
 def test_load_whisper_model_forces_cpu_and_int8(monkeypatch) -> None:
