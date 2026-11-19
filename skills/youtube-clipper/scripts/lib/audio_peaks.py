@@ -5,6 +5,8 @@ import subprocess
 from functools import lru_cache
 from pathlib import Path
 
+import numpy as np
+
 from lib.models import CaptionSegment, ClipError, HeatmapPeak, WordTiming
 
 PTS_RE = re.compile(r"pts_time:(\d+(?:\.\d+)?)")
@@ -110,6 +112,31 @@ def _load_whisper_model(model_size: str):
     return WhisperModel(model_size, device="cpu", compute_type="int8")
 
 
+def _decode_audio_16k_mono(audio_path: Path) -> np.ndarray:
+    """Decode any FFmpeg-supported audio/video file to 16 kHz mono float32 PCM."""
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(audio_path),
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-f",
+        "f32le",
+        "pipe:1",
+    ]
+    proc = subprocess.run(cmd, capture_output=True)
+    if proc.returncode != 0:
+        err = (proc.stderr or b"").decode("utf-8", errors="replace").strip()[:400]
+        raise ClipError("FFMPEG_FAILED", f"Audio decode failed for transcription: {err}")
+    return np.frombuffer(proc.stdout, dtype=np.float32)
+
+
 def transcribe_audio(
     audio_path: Path,
     model_size: str = "base",
@@ -117,9 +144,10 @@ def transcribe_audio(
     clip_offset: float = 0.0,
 ) -> tuple[list[CaptionSegment], list[WordTiming], str]:
     """Transcribe audio locally with faster-whisper and offset timestamps by clip_offset."""
+    pcm = _decode_audio_16k_mono(audio_path)
     model = _load_whisper_model(model_size)
     raw_segments, info = model.transcribe(
-        str(audio_path),
+        pcm,
         language=language,
         word_timestamps=True,
         vad_filter=True,

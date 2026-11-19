@@ -121,11 +121,13 @@ def test_transcribe_audio_uses_faster_whisper_and_offsets_times(monkeypatch, tmp
             assert device == "cpu"
             assert compute_type == "int8"
 
-        def transcribe(self, path: str, language=None, word_timestamps: bool = True, vad_filter: bool = True):
+        def transcribe(self, audio_input, language=None, word_timestamps: bool = True, vad_filter: bool = True):
+            assert getattr(audio_input, "dtype", None) == ap.np.float32
             return [fake_seg], fake_info
 
     import lib.audio_peaks as ap
 
+    monkeypatch.setattr(ap, "_decode_audio_16k_mono", lambda p: ap.np.zeros(1600, dtype=ap.np.float32))
     monkeypatch.setattr(ap, "_load_whisper_model", lambda size: FakeModel(size, "cpu", "int8"))
     audio = tmp_path / "clip.wav"
     audio.write_bytes(b"RIFF")
@@ -142,11 +144,12 @@ def test_transcribe_audio_falls_back_when_info_language_is_none(monkeypatch, tmp
     fake_info = SimpleNamespace(language=None)
 
     class FakeModel:
-        def transcribe(self, path: str, language=None, word_timestamps: bool = True, vad_filter: bool = True):
+        def transcribe(self, audio_input, language=None, word_timestamps: bool = True, vad_filter: bool = True):
             return [fake_seg], fake_info
 
     import lib.audio_peaks as ap
 
+    monkeypatch.setattr(ap, "_decode_audio_16k_mono", lambda p: ap.np.zeros(1600, dtype=ap.np.float32))
     monkeypatch.setattr(ap, "_load_whisper_model", lambda size: FakeModel())
     audio = tmp_path / "clip.wav"
     audio.write_bytes(b"RIFF")
@@ -156,6 +159,20 @@ def test_transcribe_audio_falls_back_when_info_language_is_none(monkeypatch, tmp
 
     _, _, explicit_lang = transcribe_audio(audio, model_size="base", language="es")
     assert explicit_lang == "es"
+
+
+def test_decode_audio_16k_mono_decodes_real_ffmpeg_tone(tmp_path: Path) -> None:
+    import subprocess
+    import lib.audio_peaks as ap
+
+    tone = tmp_path / "tone.m4a"
+    subprocess.run(
+        ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.5", "-c:a", "aac", str(tone)],
+        check=True,
+    )
+    pcm = ap._decode_audio_16k_mono(tone)
+    assert pcm.dtype == ap.np.float32
+    assert 6000 <= len(pcm) <= 10000
 
 
 def test_load_whisper_model_forces_cpu_and_int8(monkeypatch) -> None:
