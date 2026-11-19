@@ -1,0 +1,170 @@
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any
+
+VALID_LAYOUTS = {"face-track", "blurred-fit", "split", "landscape", "auto"}
+VALID_CORNERS = {"br", "bl", "tr", "tl"}
+VALID_CAPTION_STYLES = {"bold-highlight", "clean", "none"}
+
+
+class ClipError(Exception):
+    def __init__(self, code: str, message: str, hint: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.hint = hint
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {"ok": False, "error_code": self.code, "message": self.message}
+        if self.hint:
+            payload["hint"] = self.hint
+        return payload
+
+
+@dataclass
+class HeatmapPeak:
+    start: float
+    end: float
+    peak_time: float
+    score: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class WordTiming:
+    word: str
+    start: float
+    end: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class CaptionSegment:
+    start: float
+    end: float
+    text: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class TranscriptBlock:
+    start: float
+    end: float
+    text: str
+    heatmap_score: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class MediaInfo:
+    width: int
+    height: int
+    fps: float
+    duration: float
+    has_audio: bool
+
+
+@dataclass
+class TrackingPlan:
+    src_width: int
+    src_height: int
+    crop_width: int
+    fps: float
+    total_frames: int
+    face_ratio: float
+    x0_per_frame: list[int]
+
+
+def sanitize_slug(value: str, fallback: str = "clip") -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "-", value.strip().lower()).strip("-")
+    return cleaned[:48] or fallback
+
+
+@dataclass
+class ClipSpec:
+    id: str
+    slug: str
+    start: float
+    end: float
+    layout: str = "face-track"
+    split_cam_corner: str = "br"
+    captions: bool = True
+    caption_style: str = "bold-highlight"
+    title: str = ""
+    caption_text: str = ""
+    hashtags: list[str] = field(default_factory=list)
+    why_selected: str = ""
+
+    def validate(self) -> None:
+        if self.end <= self.start:
+            raise ClipError("INVALID_PLAN", f"Clip {self.id}: end ({self.end}) must be greater than start ({self.start}).")
+        if self.start < 0:
+            raise ClipError("INVALID_PLAN", f"Clip {self.id}: start ({self.start}) must be >= 0.")
+        if self.layout not in VALID_LAYOUTS:
+            raise ClipError("INVALID_PLAN", f"Clip {self.id}: unsupported layout '{self.layout}'. Valid: {sorted(VALID_LAYOUTS)}")
+        if self.split_cam_corner not in VALID_CORNERS:
+            raise ClipError("INVALID_PLAN", f"Clip {self.id}: unsupported split_cam_corner '{self.split_cam_corner}'.")
+        if self.caption_style not in VALID_CAPTION_STYLES:
+            raise ClipError("INVALID_PLAN", f"Clip {self.id}: unsupported caption_style '{self.caption_style}'.")
+        self.slug = sanitize_slug(self.slug or self.id, fallback=self.id)
+
+
+@dataclass
+class ClipsPlan:
+    video_url: str
+    video_id: str
+    video_title: str
+    clips: list[ClipSpec]
+    cache_subtitles: str | None = None
+    cookies_from_browser: str | None = None
+
+    @classmethod
+    def from_json_file(cls, path: Path) -> "ClipsPlan":
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise ClipError("INVALID_PLAN", f"Failed to parse plan JSON at {path}: {exc}") from exc
+
+        raw_clips = raw.get("clips")
+        if not isinstance(raw_clips, list) or not raw_clips:
+            raise ClipError("INVALID_PLAN", "Plan must contain a non-empty 'clips' list.")
+
+        clips: list[ClipSpec] = []
+        for idx, item in enumerate(raw_clips, start=1):
+            spec = ClipSpec(
+                id=str(item.get("id") or f"clip_{idx:02d}"),
+                slug=str(item.get("slug") or f"clip-{idx:02d}"),
+                start=float(item["start"]),
+                end=float(item["end"]),
+                layout=str(item.get("layout", "face-track")),
+                split_cam_corner=str(item.get("split_cam_corner", "br")),
+                captions=bool(item.get("captions", True)),
+                caption_style=str(item.get("caption_style", "bold-highlight")),
+                title=str(item.get("title", "")),
+                caption_text=str(item.get("caption_text", "")),
+                hashtags=[str(h) for h in item.get("hashtags", [])],
+                why_selected=str(item.get("why_selected", "")),
+            )
+            spec.validate()
+            clips.append(spec)
+
+        return cls(
+            video_url=str(raw.get("video_url", "")),
+            video_id=str(raw.get("video_id", "video")),
+            video_title=str(raw.get("video_title", "")),
+            clips=clips,
+            cache_subtitles=raw.get("cache_subtitles"),
+            cookies_from_browser=raw.get("cookies_from_browser"),
+        )
