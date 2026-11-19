@@ -128,6 +128,7 @@ class ClipsPlan:
     video_title: str
     clips: list[ClipSpec]
     cache_subtitles: str | None = None
+    cache_live_manifest: str | None = None
     cookies_from_browser: str | None = None
 
     @classmethod
@@ -182,5 +183,6 @@ class ClipsPlan:
             video_title=str(raw.get("video_title", "")),
             clips=clips,
             cache_subtitles=raw.get("cache_subtitles"),
+            cache_live_manifest=raw.get("cache_live_manifest"),
             cookies_from_browser=raw.get("cookies_from_browser"),
         )

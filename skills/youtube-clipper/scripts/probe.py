@@ -9,7 +9,8 @@ from typing import Any
 
 from lib.audio_peaks import detect_audio_peaks, transcribe_audio
 from lib.heatmap import extract_heatmap_peaks
-from lib.models import CaptionSegment, ClipError, HeatmapPeak
+from lib.live_dvr import prepare_live_probe, words_to_json3
+from lib.models import CaptionSegment, ClipError, HeatmapPeak, WordTiming
 from lib.subtitles import build_transcript_blocks, parse_json3, parse_vtt
 from lib.youtube import download_audio_only, download_subtitles, fetch_video_info
 
@@ -20,13 +21,14 @@ def _transcribe_fallback(
     peaks: list[HeatmapPeak],
     max_windows: int,
     work_dir: Path,
-) -> tuple[list[CaptionSegment], str]:
+) -> tuple[list[CaptionSegment], list[WordTiming], str]:
     """Transcribe downloaded audio directly or across peak-centered windows for long VODs."""
     if duration_sec <= 1200.0 or not peaks:
-        segments, _, lang = transcribe_audio(audio_path, model_size="base")
-        return segments, lang
+        segments, words, lang = transcribe_audio(audio_path, model_size="base")
+        return segments, words, lang
 
     all_segments: list[CaptionSegment] = []
+    all_words: list[WordTiming] = []
     detected_lang = "en"
     tmp_dir = work_dir / "cache" / "whisper_windows"
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -59,10 +61,12 @@ def _transcribe_fallback(
             errors="replace",
             check=True,
         )
-        segs, _, detected_lang = transcribe_audio(slice_wav, model_size="base", clip_offset=w_start)
+        segs, words, detected_lang = transcribe_audio(slice_wav, model_size="base", clip_offset=w_start)
         all_segments.extend(segs)
+        all_words.extend(words)
     all_segments.sort(key=lambda s: s.start)
-    return all_segments, detected_lang
+    all_words.sort(key=lambda w: w.start)
+    return all_segments, all_words, detected_lang
 
 
 def run_probe(
@@ -72,14 +76,16 @@ def run_probe(
     max_windows: int = 15,
     full_transcript: bool = False,
     cookies_from_browser: str | None = None,
+    live_window: float = 300.0,
 ) -> dict[str, Any]:
-    """Probe a YouTube URL, extract peaks and captions, and write analysis.json."""
+    """Probe a YouTube URL (VOD or active livestream DVR tail), extract peaks/captions, and write analysis.json."""
     info = fetch_video_info(url, cookies_from_browser=cookies_from_browser)
-    if info.get("is_live"):
+    is_live = bool(info.get("is_live"))
+    if is_live and live_window <= 0:
         raise ClipError(
             "LIVE_STREAM_ACTIVE",
-            "This YouTube broadcast is currently live. youtube-clipper supports finished videos and livestream VODs.",
-            hint="Wait until the stream finishes or clip the VOD once YouTube publishes it.",
+            "This YouTube broadcast is currently live and --live-window was set to 0.",
+            hint="Re-run with --live-window 300 (default) to clip from the recent live DVR window, or wait for the VOD.",
         )
 
     video_id = str(info.get("id") or "video")
@@ -102,27 +108,50 @@ def run_probe(
         for ch in (info.get("chapters") or [])
     ]
 
-    sub_path, caption_source, detected_lang = download_subtitles(
-        url, cache_dir, lang=lang, cookies_from_browser=cookies_from_browser
-    )
     segments: list[CaptionSegment] = []
+    words: list[WordTiming] = []
     has_word_timestamps = False
+    sub_path: Path | None = None
     audio_path: Path | None = None
+    live_manifest_path: Path | None = None
     audio_peaks: list[HeatmapPeak] = []
+    caption_source = "none"
+    detected_lang = lang
 
-    if sub_path and caption_source == "youtube_json3":
-        segments, words = parse_json3(sub_path.read_text(encoding="utf-8"))
-        has_word_timestamps = len(words) > 0
-    elif sub_path and caption_source == "youtube_vtt":
-        segments = parse_vtt(sub_path.read_text(encoding="utf-8"))
-    else:
-        audio_path = download_audio_only(url, cache_dir, cookies_from_browser=cookies_from_browser)
+    if is_live:
+        audio_path, live_manifest_path, duration_sec = prepare_live_probe(
+            info, cache_dir, window_sec=float(live_window)
+        )
         audio_peaks = detect_audio_peaks(audio_path, duration_sec=duration_sec, max_peaks=max_windows)
-        candidate_peaks = heatmap_peaks or audio_peaks
-        segments, detected_lang = _transcribe_fallback(
-            audio_path, duration_sec, candidate_peaks, max_windows, work_dir
+        segments, words, detected_lang = _transcribe_fallback(
+            audio_path, duration_sec, audio_peaks, max_windows, work_dir
         )
         caption_source = "faster_whisper"
+        if segments:
+            sub_path = cache_dir / "whisper_words.json3"
+            sub_path.write_text(words_to_json3(segments, words), encoding="utf-8")
+            has_word_timestamps = len(words) > 0
+    else:
+        sub_path, caption_source, detected_lang = download_subtitles(
+            url, cache_dir, lang=lang, cookies_from_browser=cookies_from_browser
+        )
+        if sub_path and caption_source == "youtube_json3":
+            segments, words = parse_json3(sub_path.read_text(encoding="utf-8"))
+            has_word_timestamps = len(words) > 0
+        elif sub_path and caption_source == "youtube_vtt":
+            segments = parse_vtt(sub_path.read_text(encoding="utf-8"))
+        else:
+            audio_path = download_audio_only(url, cache_dir, cookies_from_browser=cookies_from_browser)
+            audio_peaks = detect_audio_peaks(audio_path, duration_sec=duration_sec, max_peaks=max_windows)
+            candidate_peaks = heatmap_peaks or audio_peaks
+            segments, words, detected_lang = _transcribe_fallback(
+                audio_path, duration_sec, candidate_peaks, max_windows, work_dir
+            )
+            caption_source = "faster_whisper"
+            if segments and words:
+                sub_path = cache_dir / "whisper_words.json3"
+                sub_path.write_text(words_to_json3(segments, words), encoding="utf-8")
+                has_word_timestamps = True
 
     signal_peaks = heatmap_peaks or audio_peaks
     blocks, truncated = build_transcript_blocks(
@@ -141,7 +170,7 @@ def run_probe(
             "channel": str(info.get("channel") or info.get("uploader") or ""),
             "duration_sec": duration_sec,
             "upload_date": str(info.get("upload_date", "")),
-            "is_live": False,
+            "is_live": is_live,
             "was_live": bool(info.get("was_live", False)),
         },
         "signals": {
@@ -158,6 +187,7 @@ def run_probe(
         "cache_paths": {
             "subtitles": str(sub_path.resolve()) if sub_path else None,
             "audio": str(audio_path.resolve()) if audio_path else None,
+            "live_manifest": str(live_manifest_path.resolve()) if live_manifest_path else None,
         },
     }
 
@@ -168,10 +198,12 @@ def run_probe(
         "ok": True,
         "video_id": video_id,
         "title": analysis["video"]["title"],
+        "is_live": is_live,
         "duration_sec": duration_sec,
         "caption_source": caption_source,
         "has_heatmap": len(heatmap_peaks) > 0,
         "heatmap_peaks_count": len(heatmap_peaks),
+        "audio_peaks_count": len(audio_peaks),
         "transcript_blocks_count": len(blocks),
         "analysis_path": str(analysis_path.resolve()),
     }
@@ -186,6 +218,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-windows", type=int, default=15)
     parser.add_argument("--full-transcript", action="store_true")
     parser.add_argument("--cookies-from-browser", default=None)
+    parser.add_argument("--live-window", type=float, default=300.0, help="Seconds of live DVR history to analyze (0 to reject active livestreams).")
     args = parser.parse_args(argv)
 
     try:
@@ -196,6 +229,7 @@ def main(argv: list[str] | None = None) -> int:
             max_windows=args.max_windows,
             full_transcript=args.full_transcript,
             cookies_from_browser=args.cookies_from_browser,
+            live_window=args.live_window,
         )
         print(json.dumps(summary, indent=2))
         return 0

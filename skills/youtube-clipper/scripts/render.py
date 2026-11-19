@@ -18,6 +18,7 @@ from lib.ffmpeg_ops import (
     render_static_layout_clip,
     trim_exact,
 )
+from lib.live_dvr import materialize_live_clip
 from lib.models import CaptionSegment, ClipError, ClipSpec, ClipsPlan, WordTiming
 from lib.subtitles import parse_json3, parse_vtt, segments_to_proportional_words, slice_words_for_clip
 from lib.tracking import analyze_video_tracking
@@ -125,6 +126,13 @@ def run_render(
             if local_source is not None:
                 source_file = local_source.resolve()
                 trim_offset = clip.start
+            elif plan.cache_live_manifest:
+                source_file, trim_offset = materialize_live_clip(
+                    Path(plan.cache_live_manifest),
+                    start=clip.start,
+                    end=clip.end,
+                    clip_temp=clip_temp,
+                )
             else:
                 buf_start = max(0.0, clip.start - 2.0)
                 buf_end = clip.end + 2.0

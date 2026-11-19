@@ -397,3 +397,34 @@ def test_render_isolates_per_clip_tracking_failures(monkeypatch: pytest.MonkeyPa
     assert "Failed (`MEDIA_ERROR`" in kit_text
     assert "Good Clip" in kit_text
 
+
+def test_render_uses_cache_live_manifest_for_live_clips(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    src = _make_synthetic_video(tmp_path / "live_capture.mp4", duration=4.0)
+    manifest = tmp_path / "live_manifest.json"
+    manifest.write_text(json.dumps({"mode": "local_capture", "capture_path": str(src)}), encoding="utf-8")
+
+    plan_path = tmp_path / "live_plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "video_url": "https://www.youtube.com/live/live99",
+                "video_id": "live99",
+                "video_title": "Live Stream",
+                "cache_live_manifest": str(manifest),
+                "clips": [
+                    {"id": "clip_01", "slug": "live-best", "start": 0.5, "end": 2.5, "layout": "blurred-fit", "captions": False, "title": "Live Best"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    out_dir = tmp_path / "out_live"
+    report = run_render(plan_path, out_dir=out_dir)
+    assert report["ok"] is True
+    out_mp4 = Path(report["clips"][0]["output_path"])
+    assert out_mp4.exists()
+    info = probe_media(out_mp4)
+    assert (info.width, info.height) == (1080, 1920)
+
+

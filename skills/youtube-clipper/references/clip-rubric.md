@@ -32,6 +32,7 @@ Score candidate windows from `analysis.json` (`signals.heatmap_peaks`, `signals.
   "video_id": "<video.id from analysis.json>",
   "video_title": "<video.title from analysis.json>",
   "cache_subtitles": "<cache_paths.subtitles or null>",
+  "cache_live_manifest": "<cache_paths.live_manifest or null>",
   "cookies_from_browser": null,
   "clips": [
     {

@@ -63,15 +63,59 @@ def test_probe_writes_analysis_json_with_heatmap_and_json3(monkeypatch, tmp_path
     assert analysis["transcript_blocks"][0]["heatmap_score"] == 0.92
 
 
-def test_probe_rejects_active_livestream(monkeypatch, tmp_path: Path) -> None:
+def test_probe_rejects_active_livestream_when_live_window_zero(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(
         probe_mod,
         "fetch_video_info",
-        lambda url, cookies_from_browser=None: {"id": "live1", "title": "Live Now", "is_live": True, "duration": 0},
+        lambda url, cookies_from_browser=None: {"id": "live1", "title": "Live Now", "is_live": True, "duration": None},
     )
     with pytest.raises(ClipError) as exc:
-        probe_mod.run_probe("https://www.youtube.com/watch?v=live1", out_dir=tmp_path)
+        probe_mod.run_probe("https://www.youtube.com/watch?v=live1", out_dir=tmp_path, live_window=0)
     assert exc.value.code == "LIVE_STREAM_ACTIVE"
+
+
+def test_probe_live_dvr_window_writes_manifest_and_json3_words(monkeypatch, tmp_path: Path) -> None:
+    fake_info = {"id": "live2", "title": "Live GTA Stream", "channel": "Gamer", "is_live": True, "duration": None}
+    audio_file = tmp_path / "cache" / "live_audio.m4a"
+    manifest_file = tmp_path / "cache" / "live_manifest.json"
+    audio_file.parent.mkdir(parents=True, exist_ok=True)
+    audio_file.write_bytes(b"m4a")
+    manifest_file.write_text(json.dumps({"mode": "dvr", "duration_sec": 300.0, "segments": []}), encoding="utf-8")
+
+    monkeypatch.setattr(probe_mod, "fetch_video_info", lambda url, cookies_from_browser=None: fake_info)
+    monkeypatch.setattr(
+        probe_mod,
+        "prepare_live_probe",
+        lambda info, cache_dir, window_sec=300.0: (audio_file, manifest_file, 300.0),
+    )
+    monkeypatch.setattr(
+        probe_mod,
+        "detect_audio_peaks",
+        lambda ap, duration_sec, max_peaks=15: [probe_mod.HeatmapPeak(start=100.0, end=140.0, peak_time=120.0, score=0.95)],
+    )
+    monkeypatch.setattr(
+        probe_mod,
+        "transcribe_audio",
+        lambda ap, model_size="base", clip_offset=0.0: (
+            [probe_mod.CaptionSegment(start=110.0, end=114.0, text="Insane live clutch")],
+            [
+                probe_mod.WordTiming("Insane", 110.0, 111.0),
+                probe_mod.WordTiming("live", 111.0, 112.0),
+                probe_mod.WordTiming("clutch", 112.0, 114.0),
+            ],
+            "en",
+        ),
+    )
+
+    summary = probe_mod.run_probe("https://www.youtube.com/live/live2", out_dir=tmp_path, live_window=300)
+    assert summary["ok"] is True
+    assert summary["is_live"] is True
+    assert summary["duration_sec"] == 300.0
+    analysis = json.loads((tmp_path / "analysis.json").read_text(encoding="utf-8"))
+    assert analysis["video"]["is_live"] is True
+    assert analysis["cache_paths"]["live_manifest"] == str(manifest_file.resolve())
+    assert analysis["signals"]["has_word_timestamps"] is True
+    assert Path(analysis["cache_paths"]["subtitles"]).exists()
 
 
 def test_probe_falls_back_to_audio_and_whisper_when_no_subtitles(monkeypatch, tmp_path: Path) -> None:
@@ -152,7 +196,8 @@ def test_probe_long_vod_windowed_whisper_transcription(monkeypatch, tmp_path: Pa
         ),
     )
 
-    segs, lang = probe_mod._transcribe_fallback(audio_file, duration_sec=2400.0, peaks=peaks, max_windows=5, work_dir=tmp_path)
+    segs, words, lang = probe_mod._transcribe_fallback(audio_file, duration_sec=2400.0, peaks=peaks, max_windows=5, work_dir=tmp_path)
+    assert words == []
     assert lang == "en"
     assert len(ffmpeg_calls) == 1
     assert segs[0].start == 71.0
