@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+clips/
+outputs/
+*.mp4
+*.mkv
+*.webm
+*.m4a
+*.wav
+skills/youtube-clipper/scripts/.venv_python
