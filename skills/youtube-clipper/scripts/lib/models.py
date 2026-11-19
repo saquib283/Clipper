@@ -9,6 +9,7 @@ from typing import Any
 VALID_LAYOUTS = {"face-track", "blurred-fit", "split", "landscape", "auto"}
 VALID_CORNERS = {"br", "bl", "tr", "tl"}
 VALID_CAPTION_STYLES = {"bold-highlight", "clean", "none"}
+VALID_VISUAL_EFFECTS = {"none", "zoom-punch", "shake", "bw-flash", "red-flash"}
 
 
 class ClipError(Exception):
@@ -93,6 +94,31 @@ def sanitize_slug(value: str, fallback: str = "clip") -> str:
 
 
 @dataclass
+class MemeCue:
+    at: float
+    sfx: str | None = None
+    visual: str = "none"
+    volume: float = 0.35
+    duration: float = 0.4
+
+    def validate(self, clip_id: str) -> None:
+        if self.at < 0.0:
+            raise ClipError("INVALID_PLAN", f"Clip {clip_id}: effect 'at' ({self.at}) must be >= 0.")
+        if self.visual not in VALID_VISUAL_EFFECTS:
+            raise ClipError(
+                "INVALID_PLAN",
+                f"Clip {clip_id}: unsupported visual effect '{self.visual}'. Valid: {sorted(VALID_VISUAL_EFFECTS)}",
+            )
+        if not (0.0 < self.volume <= 1.5):
+            raise ClipError("INVALID_PLAN", f"Clip {clip_id}: effect volume ({self.volume}) must be in (0, 1.5].")
+        if not (0.1 <= self.duration <= 2.0):
+            raise ClipError("INVALID_PLAN", f"Clip {clip_id}: effect duration ({self.duration}) must be in [0.1, 2.0].")
+        if self.sfx is not None:
+            cleaned = self.sfx.strip().lower()
+            self.sfx = cleaned or None
+
+
+@dataclass
 class ClipSpec:
     id: str
     slug: str
@@ -106,6 +132,7 @@ class ClipSpec:
     caption_text: str = ""
     hashtags: list[str] = field(default_factory=list)
     why_selected: str = ""
+    effects: list[MemeCue] = field(default_factory=list)
 
     def validate(self) -> None:
         if self.end <= self.start:
@@ -118,6 +145,8 @@ class ClipSpec:
             raise ClipError("INVALID_PLAN", f"Clip {self.id}: unsupported split_cam_corner '{self.split_cam_corner}'.")
         if self.caption_style not in VALID_CAPTION_STYLES:
             raise ClipError("INVALID_PLAN", f"Clip {self.id}: unsupported caption_style '{self.caption_style}'.")
+        for cue in self.effects:
+            cue.validate(self.id)
         self.slug = sanitize_slug(self.slug or self.id, fallback=self.id)
 
 
@@ -157,7 +186,28 @@ class ClipsPlan:
             else:
                 raise ClipError("INVALID_PLAN", f"Invalid clip entry #{idx}: 'hashtags' must be a list.")
 
+            raw_effects = item.get("effects")
+            if raw_effects is None:
+                effects_raw_list: list[Any] = []
+            elif isinstance(raw_effects, list):
+                effects_raw_list = raw_effects
+            else:
+                raise ClipError("INVALID_PLAN", f"Invalid clip entry #{idx}: 'effects' must be a list.")
+
             try:
+                parsed_effects: list[MemeCue] = []
+                for e_idx, eff in enumerate(effects_raw_list, start=1):
+                    if not isinstance(eff, dict):
+                        raise ClipError("INVALID_PLAN", f"Invalid clip entry #{idx} effect #{e_idx}: expected an object.")
+                    parsed_effects.append(
+                        MemeCue(
+                            at=float(eff["at"]),
+                            sfx=None if eff.get("sfx") is None else str(eff.get("sfx")),
+                            visual=str(eff.get("visual", "none")),
+                            volume=float(eff.get("volume", 0.35)),
+                            duration=float(eff.get("duration", 0.4)),
+                        )
+                    )
                 spec = ClipSpec(
                     id=str(item.get("id") or f"clip_{idx:02d}"),
                     slug=str(item.get("slug") or f"clip-{idx:02d}"),
@@ -171,7 +221,10 @@ class ClipsPlan:
                     caption_text=str(item.get("caption_text", "")),
                     hashtags=[str(h) for h in hashtags_list],
                     why_selected=str(item.get("why_selected", "")),
+                    effects=parsed_effects,
                 )
+            except ClipError:
+                raise
             except (KeyError, TypeError, ValueError) as exc:
                 raise ClipError("INVALID_PLAN", f"Invalid clip entry #{idx}: {exc}") from exc
             spec.validate()

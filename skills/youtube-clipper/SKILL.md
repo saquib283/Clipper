@@ -32,7 +32,7 @@ Turn YouTube videos, podcasts, livestream VODs, and active YouTube live broadcas
 3. **Select clips (Agent Brain):**
    Read `analysis.json` (`analysis_path` from `probe`; its folder is `<WORK_DIR>`) and [clip-rubric.md](./references/clip-rubric.md).
    - Score hooks, payoffs, `signals.heatmap_peaks`, and `signals.audio_peaks`; snap `start`/`end` to sentence boundaries in `transcript_blocks` (default `3` non-overlapping clips, `25–60s` or requested length).
-   - Choose `layout` (`face-track` default, `auto`, `blurred-fit`, `split`, `landscape`) and `caption_style` (`bold-highlight`, `clean`, `none`).
+   - Choose `layout` (`face-track` default, `auto`, `blurred-fit`, `split`, `landscape`), `caption_style` (`bold-highlight`, `clean`, `none`), and optional `effects` (`0–3` tasteful cues from `signals.available_sfx` per `clip-rubric.md`, `>=6s` apart—never spam).
    - If the user asked to preview candidates first, share the shortlist with timestamps and wait; otherwise write `<WORK_DIR>/clips_plan.json` (`cache_live_manifest` copied when live; `title`, `caption_text`, `hashtags`, `why_selected` populated) and proceed.
 
 4. **Render targeted clips:**

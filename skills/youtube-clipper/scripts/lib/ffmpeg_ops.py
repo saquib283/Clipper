@@ -6,7 +6,8 @@ from pathlib import Path
 
 import cv2
 
-from lib.models import ClipError, MediaInfo, TrackingPlan
+from lib.models import ClipError, MediaInfo, MemeCue, TrackingPlan
+from lib.sfx import build_audio_mix_filtergraph, build_visual_effects_chain
 
 AUDIO_LOUDNORM = "loudnorm=I=-14:TP=-1.5:LRA=11"
 
@@ -181,6 +182,41 @@ def build_static_filtergraph(
     raise ClipError("INVALID_LAYOUT", f"Unsupported static layout: {layout}")
 
 
+def _resolve_sfx_inputs(
+    effects: list[MemeCue] | None,
+    sfx_library: dict[str, Path] | None,
+    start_index: int,
+) -> list[tuple[int, MemeCue, Path]]:
+    if not effects or not sfx_library:
+        return []
+    entries: list[tuple[int, MemeCue, Path]] = []
+    idx = start_index
+    for cue in effects:
+        if cue.sfx and cue.sfx in sfx_library:
+            entries.append((idx, cue, sfx_library[cue.sfx]))
+            idx += 1
+    return entries
+
+
+def _video_encode_args(out_path: Path, shortest: bool = False) -> list[str]:
+    args = [
+        "-c:v",
+        "libx264",
+        "-preset",
+        "medium",
+        "-crf",
+        "20",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+    ]
+    if shortest:
+        args.append("-shortest")
+    args.append(str(out_path.resolve()))
+    return args
+
+
 def render_static_layout_clip(
     trimmed_path: Path,
     out_path: Path,
@@ -189,31 +225,77 @@ def render_static_layout_clip(
     ass_filename: str | None,
     work_dir: Path,
     split_cam_corner: str = "br",
+    effects: list[MemeCue] | None = None,
+    sfx_library: dict[str, Path] | None = None,
 ) -> Path:
     """Render a static layout clip via FFmpeg filter_complex using work_dir as cwd for relative ASS paths."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    fg = build_static_filtergraph(
-        layout=layout,
-        src_w=media.width,
-        src_h=media.height,
-        has_captions=bool(ass_filename),
-        split_cam_corner=split_cam_corner,
-        ass_filename=ass_filename or "captions.ass",
-    )
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-i",
-        str(trimmed_path.resolve()),
-        "-filter_complex",
-        fg,
-        "-map",
-        "[vout]",
-        *_audio_and_video_encode_args(media, out_path, audio_map="0:a:0"),
-    ]
+    active_effects = effects or []
+    has_visual = any(c.visual and c.visual != "none" for c in active_effects)
+    sfx_entries = _resolve_sfx_inputs(active_effects, sfx_library, start_index=1)
+
+    if not has_visual and not sfx_entries:
+        fg = build_static_filtergraph(
+            layout=layout,
+            src_w=media.width,
+            src_h=media.height,
+            has_captions=bool(ass_filename),
+            split_cam_corner=split_cam_corner,
+            ass_filename=ass_filename or "captions.ass",
+        )
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(trimmed_path.resolve()),
+            "-filter_complex",
+            fg,
+            "-map",
+            "[vout]",
+            *_audio_and_video_encode_args(media, out_path, audio_map="0:a:0"),
+        ]
+    else:
+        base_fg = build_static_filtergraph(
+            layout=layout,
+            src_w=media.width,
+            src_h=media.height,
+            has_captions=False,
+            split_cam_corner=split_cam_corner,
+        )
+        assert base_fg.endswith("[vout]")
+        base_fg = base_fg[:-6] + "[vbase]"
+        out_w, out_h = (media.width, media.height) if layout == "landscape" else (1080, 1920)
+        vfx_fg = build_visual_effects_chain("[vbase]", "[vfx]", active_effects, width=out_w, height=out_h)
+        if ass_filename:
+            safe_ass = _validate_relative_ass_filename(ass_filename)
+            cap_fg = f"[vfx]ass={safe_ass}[vout]"
+        else:
+            cap_fg = "[vfx]null[vout]"
+        fg_parts = [base_fg, vfx_fg, cap_fg]
+
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(trimmed_path.resolve()),
+        ]
+        for _, _, sfx_path in sfx_entries:
+            cmd.extend(["-i", str(sfx_path.resolve())])
+
+        if sfx_entries:
+            fg_parts.append(build_audio_mix_filtergraph("0:a:0", sfx_entries, media.has_audio, output_label="[aout]"))
+            cmd.extend(["-filter_complex", ";".join(fg_parts), "-map", "[vout]", "-map", "[aout]", "-c:a", "aac", "-b:a", "192k"])
+            cmd.extend(_video_encode_args(out_path))
+        else:
+            cmd.extend(["-filter_complex", ";".join(fg_parts), "-map", "[vout]"])
+            cmd.extend(_audio_and_video_encode_args(media, out_path, audio_map="0:a:0"))
+
     proc = subprocess.run(cmd, cwd=str(work_dir), capture_output=True, text=True, encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         raise ClipError("FFMPEG_FAILED", f"Static render ({layout}) failed: {proc.stderr.strip()[:400]}")
@@ -227,13 +309,14 @@ def render_face_tracked_clip(
     media: MediaInfo,
     ass_filename: str | None,
     work_dir: Path,
+    effects: list[MemeCue] | None = None,
+    sfx_library: dict[str, Path] | None = None,
 ) -> Path:
     """Crop per-frame face-tracked columns in OpenCV and pipe raw BGR frames into FFmpeg."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    vf_parts = ["scale=1080:1920:flags=lanczos", "setsar=1"]
-    if ass_filename:
-        vf_parts.append(f"ass={_validate_relative_ass_filename(ass_filename)}")
-    vf = ",".join(vf_parts)
+    active_effects = effects or []
+    has_visual = any(c.visual and c.visual != "none" for c in active_effects)
+    sfx_entries = _resolve_sfx_inputs(active_effects, sfx_library, start_index=2)
 
     cmd = [
         "ffmpeg",
@@ -253,12 +336,41 @@ def render_face_tracked_clip(
         "pipe:0",
         "-i",
         str(trimmed_path.resolve()),
-        "-map",
-        "0:v:0",
-        "-vf",
-        vf,
-        *_audio_and_video_encode_args(media, out_path, audio_map="1:a:0", shortest=True),
     ]
+
+    if not has_visual and not sfx_entries:
+        vf_parts = ["scale=1080:1920:flags=lanczos", "setsar=1"]
+        if ass_filename:
+            vf_parts.append(f"ass={_validate_relative_ass_filename(ass_filename)}")
+        cmd.extend(
+            [
+                "-map",
+                "0:v:0",
+                "-vf",
+                ",".join(vf_parts),
+                *_audio_and_video_encode_args(media, out_path, audio_map="1:a:0", shortest=True),
+            ]
+        )
+    else:
+        for _, _, sfx_path in sfx_entries:
+            cmd.extend(["-i", str(sfx_path.resolve())])
+        fg_parts = [
+            "[0:v:0]scale=1080:1920:flags=lanczos,setsar=1[vbase]",
+            build_visual_effects_chain("[vbase]", "[vfx]", active_effects, width=1080, height=1920),
+        ]
+        if ass_filename:
+            safe_ass = _validate_relative_ass_filename(ass_filename)
+            fg_parts.append(f"[vfx]ass={safe_ass}[vout]")
+        else:
+            fg_parts.append("[vfx]null[vout]")
+
+        if sfx_entries:
+            fg_parts.append(build_audio_mix_filtergraph("1:a:0", sfx_entries, media.has_audio, output_label="[aout]"))
+            cmd.extend(["-filter_complex", ";".join(fg_parts), "-map", "[vout]", "-map", "[aout]", "-c:a", "aac", "-b:a", "192k"])
+            cmd.extend(_video_encode_args(out_path, shortest=True))
+        else:
+            cmd.extend(["-filter_complex", ";".join(fg_parts), "-map", "[vout]"])
+            cmd.extend(_audio_and_video_encode_args(media, out_path, audio_map="1:a:0", shortest=True))
 
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE, cwd=str(work_dir))
     cap = cv2.VideoCapture(str(trimmed_path))

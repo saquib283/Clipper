@@ -349,3 +349,4 @@ def materialize_live_clip(
         raise ClipError("FFMPEG_FAILED", f"Live DVR clip materialization failed: {proc.stderr.strip()[:400]}")
 
     return out_mp4, max(0.0, round(start - slice_start, 3))
+

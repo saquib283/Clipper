@@ -20,6 +20,7 @@ from lib.ffmpeg_ops import (
 )
 from lib.live_dvr import materialize_live_clip
 from lib.models import CaptionSegment, ClipError, ClipSpec, ClipsPlan, WordTiming
+from lib.sfx import discover_sfx_library, enforce_restraint, generate_starter_sfx_pack
 from lib.subtitles import parse_json3, parse_vtt, segments_to_proportional_words, slice_words_for_clip
 from lib.tracking import analyze_video_tracking
 from lib.youtube import download_video_section
@@ -116,6 +117,8 @@ def run_render(
     target_dir.mkdir(parents=True, exist_ok=True)
 
     cached_segments, cached_words = _load_cached_subtitles(plan.cache_subtitles)
+    generate_starter_sfx_pack()
+    sfx_library = discover_sfx_library()
     results: list[dict[str, Any]] = []
 
     for clip in plan.clips:
@@ -173,10 +176,19 @@ def run_render(
                 (clip_temp / "captions.ass").write_text(ass_content, encoding="utf-8")
                 ass_filename = "captions.ass"
 
+            active_effects, restraint_warnings = enforce_restraint(clip.effects, clip_duration=media.duration or clip_dur)
+            warnings.extend(restraint_warnings)
+            for cue in active_effects:
+                if cue.sfx and cue.sfx not in sfx_library:
+                    warnings.append(f"SFX '{cue.sfx}' not found in starter or custom_sfx library; skipped audio for {cue.at:.2f}s.")
+
             out_mp4 = target_dir / f"{clip.id}_{clip.slug}.mp4"
+            effect_kwargs = (
+                {"effects": active_effects, "sfx_library": sfx_library} if active_effects else {}
+            )
             if layout_used == "face-track":
                 assert tracking is not None
-                render_face_tracked_clip(trimmed, out_mp4, tracking, media, ass_filename, clip_temp)
+                render_face_tracked_clip(trimmed, out_mp4, tracking, media, ass_filename, clip_temp, **effect_kwargs)
             else:
                 render_static_layout_clip(
                     trimmed,
@@ -186,6 +198,7 @@ def run_render(
                     ass_filename,
                     clip_temp,
                     split_cam_corner=clip.split_cam_corner,
+                    **effect_kwargs,
                 )
 
             out_info = probe_media(out_mp4)
@@ -198,6 +211,7 @@ def run_render(
                     "resolution": f"{out_info.width}x{out_info.height}",
                     "layout_used": layout_used,
                     "caption_source": caption_source,
+                    "effects_applied": len(active_effects),
                     "warnings": warnings,
                 }
             )

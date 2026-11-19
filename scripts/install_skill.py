@@ -73,6 +73,16 @@ def ensure_venv(venv_dir: Path = VENV_DIR, recreate: bool = False) -> Path:
 
 
 def sync_skill(py_exe: Path, global_target: Path = DEFAULT_GLOBAL_TARGET) -> None:
+    # Ensure starter SFX wavs exist before syncing to global skill folder
+    subprocess.run(
+        [
+            str(py_exe),
+            "-c",
+            f"import sys; sys.path.insert(0, r'{SKILL_SRC / 'scripts'}'); "
+            "from lib.sfx import generate_starter_sfx_pack; generate_starter_sfx_pack()",
+        ],
+        check=True,
+    )
     src_marker = SKILL_SRC / "scripts" / ".venv_python"
     src_marker.parent.mkdir(parents=True, exist_ok=True)
     src_marker.write_text(str(py_exe.resolve()), encoding="utf-8")

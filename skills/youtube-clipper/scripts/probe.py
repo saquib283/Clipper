@@ -11,6 +11,7 @@ from lib.audio_peaks import detect_audio_peaks, transcribe_audio
 from lib.heatmap import extract_heatmap_peaks
 from lib.live_dvr import prepare_live_probe, words_to_json3
 from lib.models import CaptionSegment, ClipError, HeatmapPeak, WordTiming
+from lib.sfx import discover_sfx_library, generate_starter_sfx_pack
 from lib.subtitles import build_transcript_blocks, parse_json3, parse_vtt
 from lib.youtube import download_audio_only, download_subtitles, fetch_video_info
 
@@ -162,6 +163,9 @@ def run_probe(
         full_transcript=full_transcript,
     )
 
+    generate_starter_sfx_pack()
+    available_sfx = sorted(discover_sfx_library().keys())
+
     analysis = {
         "video": {
             "id": video_id,
@@ -182,6 +186,7 @@ def run_probe(
             "chapters": chapters,
             "heatmap_peaks": [p.to_dict() for p in heatmap_peaks],
             "audio_peaks": [p.to_dict() for p in audio_peaks],
+            "available_sfx": available_sfx,
         },
         "transcript_blocks": [b.to_dict() for b in blocks],
         "cache_paths": {

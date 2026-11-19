@@ -428,3 +428,60 @@ def test_render_uses_cache_live_manifest_for_live_clips(monkeypatch: pytest.Monk
     assert (info.width, info.height) == (1080, 1920)
 
 
+def test_render_meme_sfx_and_visual_punches_end_to_end(tmp_path: Path) -> None:
+    src = _make_synthetic_video(tmp_path / "meme_src.mp4", duration=20.0)
+    plan_path = tmp_path / "meme_plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "video_url": "https://www.youtube.com/watch?v=meme01",
+                "video_id": "meme01",
+                "video_title": "Meme Effects Test",
+                "clips": [
+                    {
+                        "id": "c1",
+                        "slug": "blurred-memes",
+                        "start": 0.0,
+                        "end": 18.0,
+                        "layout": "blurred-fit",
+                        "captions": False,
+                        "title": "Blurred Memes",
+                        "effects": [
+                            {"at": 1.0, "sfx": "alert", "visual": "zoom-punch", "volume": 0.35, "duration": 0.35},
+                            {"at": 2.5, "sfx": "soft-pop", "visual": "shake", "volume": 0.3, "duration": 0.3},
+                            {"at": 8.0, "sfx": "vine-boom", "visual": "red-flash", "volume": 0.4, "duration": 0.35},
+                            {"at": 15.0, "sfx": "womp-womp", "visual": "bw-flash", "volume": 0.35, "duration": 0.6},
+                            {"at": 16.5, "sfx": "metal-pipe", "visual": "shake", "volume": 0.35, "duration": 0.3},
+                        ],
+                    },
+                    {
+                        "id": "c2",
+                        "slug": "face-shake",
+                        "start": 0.0,
+                        "end": 4.0,
+                        "layout": "face-track",
+                        "captions": False,
+                        "title": "Face Shake",
+                        "effects": [
+                            {"at": 1.0, "sfx": "shutter-snap", "visual": "shake", "volume": 0.35, "duration": 0.35},
+                        ],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    out_dir = tmp_path / "out_memes"
+    report = run_render(plan_path, out_dir=out_dir, local_source=src)
+    assert report["ok"] is True
+    assert report["clips"][0]["effects_applied"] == 3
+    assert any("Dropped cue" in w for w in report["clips"][0]["warnings"])
+    assert report["clips"][1]["effects_applied"] == 1
+    for item in report["clips"]:
+        info = probe_media(Path(item["output_path"]))
+        assert (info.width, info.height) == (1080, 1920)
+        assert info.has_audio is True
+
+
+

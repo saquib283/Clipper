@@ -25,6 +25,14 @@ Score candidate windows from `analysis.json` (`signals.heatmap_peaks`, `signals.
 - **`landscape`:** User explicitly asks for 16:9 widescreen clips.
 - **`caption_style`:** `"bold-highlight"` (default word-highlighted ASS captions), `"clean"`, or `"none"` (with `captions: true|false`).
 
+## Meme SFX & Visual Punches (Strict Anti-Bombardment Rules)
+- Check `signals.available_sfx` in `analysis.json` (includes built-in royalty-free starter sounds plus any custom `.mp3`/`.wav` dropped in `custom_sfx/`).
+- **Never bombard clips:** Use **0–3 cues per 60s clip**, spaced at least **6 seconds apart** (hard-enforced by `render.py`). Keep `"effects": []` on serious, educational, or emotional clips unless the user asked for effects.
+- **Pacing pattern (for funny / gaming / IRL clips):** At most **1 subtle hook accent** (`0–4s`, e.g., `shutter-snap`, `alert`, `soft-pop`) + **1 climax hit** (main funny/sus/chaos punchline, e.g., `vine-boom`, `sus`, `metal-pipe`) + **1 optional payoff sting** (`womp-womp`, `rizz`, `apple-pay`).
+- **Gain staging:** Keep `"volume"` subtle (`0.30–0.45`, default `0.35`) so SFX season speech instead of drowning it out.
+- **Visual punches (`visual`):** `"none"`, `"zoom-punch"` (0.35s 1.12x snap), `"bw-flash"` (0.6s sus/fail grayscale), `"red-flash"` (0.35s rage/alert tint), `"shake"` (0.35s micro-shake).
+- Place `"at"` (clip-relative seconds) right on the exact punchline word from `cache_paths.subtitles`!
+
 ## `clips_plan.json` Schema
 ```json
 {
@@ -44,6 +52,9 @@ Score candidate windows from `analysis.json` (`signals.heatmap_peaks`, `signals.
       "split_cam_corner": "br",
       "captions": true,
       "caption_style": "bold-highlight",
+      "effects": [
+        {"at": 1.2, "sfx": "alert", "visual": "zoom-punch", "volume": 0.35, "duration": 0.35}
+      ],
       "title": "Scroll-stopping title (<60 chars)",
       "caption_text": "1-2 sentence engaging post caption with a comment hook.",
       "hashtags": ["#shorts", "#topic"],
